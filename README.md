@@ -1,6 +1,6 @@
 # dlsub
 
-A tool for replacing a subset of functions in dynamic libraries.
+A tool (x86-64 only) for replacing a subset of functions in dynamic libraries.
 
 Let's say you're meddling around with a program that uses
 [SDL](https://libsdl.org).  One thing you might want to do is replace an SDL
@@ -29,15 +29,26 @@ To install these on Ubuntu/Debian:
 sudo apt install nasm tcc
 ```
 
+On Windows, you can get yourself a copy of Microsoft Visual Studio, search for
+a file called `vcvarsall.bat`, add it to your PATH, and the run `vcvarsall x64`
+to set up the C compiler. You can install NASM from their website, and to make
+things more convenient, you can add nasm.exe to your PATH (or just copy
+the file to the same directory as dlsub.exe).
+
 On Unix-like systems, the default is to use TCC (for faster preprocessing and
 less likelihood of weird syntax messing dlsub up). You can, however, override
 this by setting the C_PREPROCESSOR environment variable.
 
+## Compiling dlsub
+
+You can use the `Makefile` and `make.bat` provided, or you can just compile
+`main.c` with any C compiler.
+
 ## Figuring out which library file is being used
 
 On Windows, it may just be a DLL file in the same directory as the exe.
-Otherwise, you can install [depends.exe](https://www.dependencywalker.com/);
-good luck.
+Otherwise, you can install [depends.exe](https://www.dependencywalker.com/)
+to figure it out.
 
 On Unix-like systems, if you want to know what specific library files an
 executable is using, run:
@@ -60,8 +71,13 @@ You can specify multiple header files if the library has more than one.
 Here is an example invocation for replacing SDL:
 
 ```bash
-dlsub --no-warn -l /usr/lib/x86_64-linux-gnu/libSDL2-2.0.so -I /usr/include/SDL2 -i SDL.h -i SDL_syswm.h -i SDL_vulkan.h -C -DSDL_DISABLE_IMMINTRIN_H -o sdl
+dlsub --no-warn -l <SDL library file> -I <SDL include directory> -i SDL.h -i SDL_syswm.h -i SDL_vulkan.h -C <- on Unix, / on Windows>DSDL_DISABLE_IMMINTRIN_H -o sdl
 ```
+
+Substitute `<SDL library file>` and `<SDL include directory>`
+with `/lib/x86_64-linux-gnu/libSDL2-2.0.so` and `/usr/include/SDL2` on Linux, and
+something like `C:\\SDL2-2.0.14\\lib\\x64\\SDL2.dll` and
+`C:\\SDL2-2.0.14\\include` on Windows 
 
 (the `-DSDL_DISABLE_IMMINTRIN_H` is needed for tcc, and it also speeds up
 processing)
@@ -71,11 +87,19 @@ Now let's say you want to replace `SDL_SetWindowTitle`. First, delete the line
 in `sdl.asm`:
 
 ```
-global SDL_SetWindowTitle:function
+GLOBAL SDL_SetWindowTitle
 ```
 
 (This deletes the default replacement, i.e. to redirect to the real SDL
 function).
+
+(This is specific to SDL.h on Windows)
+At the start of sdl.c, add:
+
+```c
+#define DLL_EXPORT
+```
+
 Now at the end of sdl.c, add:
 
 ```c
@@ -87,7 +111,8 @@ DLSUB_EXPORT void SDL_SetWindowTitle(SDL_Window *window, const char *title) {
 The `DLSUB_EXPORT` ensures that the function is exported out to the dynamic
 library (on Windows, where that distinction is made).
 
-You can now compile libSDL2-2.0.so.0 on Linux, with:
+On Linux, you can now compile libSDL2-2.0.so.0 with:
+
 ```
 nasm -f elf64 sdl.asm
 cc -fPIC -shared sdl.o sdl.c -o libSDL2-2.0.so.0 -I/usr/include/SDL2
@@ -97,6 +122,15 @@ And run a program that uses SDL like this:
 ```
 LD_LIBRARY_PATH=/directory/where/your/library/file/is ./some_application
 ```
+
+And on Windows:
+
+```
+nasm -f win64 sdl.asm -o sdl_asm.obj
+cl /nologo /Fe:SDL2 /LD sdl_asm.obj sdl.c /I C:\\SDL2-2.0.14\\include
+```
+
+And just copy `SDL2.dll` to the same directory as the target application.
 
 Note that dlsub *cannot* handle dynamic libraries' objects (e.g.
 `extern int foo;`), so if there are any you will have to make your own
@@ -114,7 +148,7 @@ without assembly.
 
 ## More examples...
 
-### Replacing `XNextEvent` from libX11
+### (Unix-y) Replacing `XNextEvent` from libX11
 
 ```bash
 dlsub --no-warn -l /usr/lib/x86_64-linux-gnu/libX11.so.6 -I /usr/include/X11 -i Xlib.h -i Xutil.h -o x11
@@ -125,7 +159,7 @@ dlsub --no-warn -l /usr/lib/x86_64-linux-gnu/libX11.so.6 -I /usr/include/X11 -i 
 Delete the line from x11.asm:
 
 ```
-global XNextEvent:function
+GLOBAL XNextEvent
 ```
 
 Add to the bottom of x11.c:
@@ -152,7 +186,7 @@ nasm -f elf64 x11.asm
 cc -fPIC -shared x11.c x11.o -o libX11.so.6 -I/usr/include/X11
 ```
 
-### Replacing `exp` from libm
+### (Unix-y) Replacing `exp` from libm
 
 Here's a silly example. This could cause some... interesting behavior.
 
@@ -165,7 +199,7 @@ dlsub --no-warn -l /lib/x86_64-linux-gnu/libm.so.6 -I /usr/include -i math.h -o 
 
 Delete from math.asm:
 ```
-global exp:function
+GLOBAL exp
 ```
 
 Add to math.c:
@@ -179,3 +213,10 @@ double exp(double x) {
 nasm -f elf64 math.asm
 cc -fPIC -shared math.c math.o -o libm.so.6
 ```
+
+### Report a bug
+
+Bugs can be sent to `pommicket at pommicket.com`. Please only report bugs that
+could/do actually occur in real usage of dlsub; in theory, it might not
+correctly parse a function returning a function pointer that returns a function
+pointer but that doesn't happen in real libraries.

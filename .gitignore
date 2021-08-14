@@ -15,3 +15,8 @@ TAGS
 *.lib
 *.exp
 *.dll
+*.pdb
+*.obj
+_dlsub_temp*
+.vs
+*.swp

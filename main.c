@@ -1,3 +1,11 @@
+/*
+Anyone is free to modify/distribute/use/sell/etc
+this software for any purpose by any means.
+Any copyright protections are relinquished by the author(s).
+This software is provided "as is", without any warranty.
+The author(s) shall not be held liable in connection with this software.
+*/
+
 #define VERSION "0.0"
 
 #if __GNUC__
@@ -92,14 +100,73 @@
 	#endif
 
 #elif _WIN32
-	#define C_PREPROCESSOR_DEFAULT "cl"
+	#define C_PREPROCESSOR_DEFAULT "cl.exe /nologo /P"
 	#include <stdio.h>
 	#include <stdlib.h>
 	#include <string.h>
 	#include <limits.h>
 	#include <ctype.h>
 	#include <assert.h>
-	#error "@TODO"
+	#include <windows.h>
+
+	#if _WIN64
+	#define fseek _fseeki64
+	#define ftell _ftelli64
+	typedef __int64 fseek_t;
+	#else
+	typedef long fseek_t;
+	#endif
+
+	typedef struct {
+		unsigned signature;
+		unsigned short machine;
+		unsigned short n_sections;
+		unsigned time_date_stamp;
+		unsigned ptr_symbol_table;
+		unsigned n_symbols;
+		unsigned short size_of_optional_header;
+		unsigned short characteristics;
+	} PEHeader;
+
+	typedef struct {
+		char name[8];
+		unsigned virtual_size;
+		unsigned virtual_address;
+		unsigned size_of_raw_data;
+		unsigned ptr_to_raw_data;
+		unsigned ptr_to_relocations;
+		unsigned ptr_to_line_numbers;
+		unsigned short number_of_relocations;
+		unsigned short number_of_linenumbers;
+		unsigned characteristics;
+	} PESectionHeader;
+
+	typedef struct {
+		unsigned flags;
+		unsigned time_date_stamp;
+		unsigned short major_version;
+		unsigned short minor_version;
+		unsigned name_rva;
+		unsigned ordinal_base;
+		unsigned address_table_entries;
+		unsigned n_name_pointers;
+		unsigned export_address_table_rva;
+		unsigned name_pointer_rva;
+		unsigned ordinal_table_rva;
+	} PEExportDirectoryTable;
+	
+	static char PEHeader__static_assertion[2 * (sizeof(PEHeader) == 24) - 1];
+	static char PESectionHeader__static_assertion[2 * (sizeof(PESectionHeader) == 40) - 1];
+	static char PEExportDirectoryTable__static_assertion[2 * (sizeof(PEExportDirectoryTable) == 40) - 1];
+
+	static int file_is_readable(const char *filename) {
+		FILE *f = fopen(filename, "rb");
+		if (f) {
+			fclose(f);
+			return 1;
+		}
+		return 0;
+	}
 #else
 	#error "Unsupported operating system."
 #endif
@@ -170,7 +237,7 @@ static void symbol_hash_table_grow(SymbolHashTable *table) {
 	
 	for (i = 0; i < table->n_entries; ++i) {
 		SymbolHashEntry *entry = table->entries[i];
-		unsigned long p;
+		size_t p;
 		if (!entry) continue;
 		p = str_hash(entry->symbol) % new_n_entries;
 		while (new_entries[p]) {
@@ -186,7 +253,7 @@ static void symbol_hash_table_grow(SymbolHashTable *table) {
 }
 
 static void symbol_hash_table_insert(SymbolHashTable *table, const char *sym_name) {
-	unsigned long p;
+	size_t p;
 	SymbolHashEntry *entry;
 	if (table->n_present_entries * 2 >= table->n_entries) {
 		symbol_hash_table_grow(table);
@@ -211,7 +278,7 @@ static void symbol_hash_table_insert(SymbolHashTable *table, const char *sym_nam
 }
 
 static SymbolHashEntry *symbol_hash_table_get(SymbolHashTable *table, const char *name) {
-	unsigned long p = str_hash(name) % table->n_entries;
+	size_t p = str_hash(name) % table->n_entries;
 	SymbolHashEntry *entry;
 	while ((entry = table->entries[p])) {
 		if (strcmp(entry->symbol, name) == 0)
@@ -437,12 +504,70 @@ int main(int argc, char **argv) {
 			}
 		}
 	#else
-		#error "@TODO"
+		{
+			PEHeader pe_header = {0};
+
+			{ /* check if this is an actual DLL, find offset to PE header */
+				unsigned short signature1 = 0;
+				unsigned pe_header_offset = 0;
+
+				fread(&signature1, sizeof signature1, 1, fp);
+				if (signature1 != 0x5a4d) {
+					fprintf(stderr, "%s is not a DLL file.\n", libname);
+					exit(2);
+				}
+
+				fseek(fp, 0x3c, SEEK_SET);
+				fread(&pe_header_offset, sizeof pe_header_offset, 1, fp);
+				fseek(fp, (fseek_t)pe_header_offset, SEEK_SET);
+			}
+			
+			fread(&pe_header, sizeof pe_header, 1, fp);
+			
+			if (pe_header.signature != 0x00004550 || (pe_header.characteristics & 0x2000) == 0) {
+				fprintf(stderr, "%s is not a DLL file.\n", libname);
+				exit(2);
+			}
+			
+			fseek(fp, (fseek_t)pe_header.size_of_optional_header, SEEK_CUR);
+
+			{
+				unsigned section;
+				PESectionHeader section_header = {0};
+				for (section = 1; section <= pe_header.n_sections; ++section) {
+					fread(&section_header, sizeof section_header, 1, fp);
+					if (strncmp(section_header.name, ".edata", 8) == 0) {
+						/* offset for all "RVA" pointers */
+						fseek_t rva_offset = (fseek_t)section_header.ptr_to_raw_data - (fseek_t)section_header.virtual_address;
+
+						PEExportDirectoryTable edt = {0};
+						unsigned s;
+						unsigned name_ptr = 0;
+						char name[256];
+
+						fseek(fp, (fseek_t)section_header.ptr_to_raw_data, SEEK_SET);
+						fread(&edt, sizeof edt, 1, fp);
+					
+						for (s = 0; s < edt.n_name_pointers; ++s) {
+							fseek(fp, rva_offset + (fseek_t)edt.name_pointer_rva + s * 4, SEEK_SET);
+							fread(&name_ptr, sizeof name_ptr, 1, fp);
+							fseek(fp, rva_offset + (fseek_t)name_ptr, SEEK_SET);
+							fread(name, 1, sizeof name, fp);
+							symbol_hash_table_insert(&all_symbols, name);
+							/* printf("%s\n",name); */
+						}
+						break;
+					}
+				}
+			}
+			
+		}
 	#endif
 		
 		fclose(fp);
 	}
 
+	/* preprocess headers */
 #if __unix__
 	{
 		int preprocessed_headers_fd = fileno(tmpfile());
@@ -534,9 +659,7 @@ int main(int argc, char **argv) {
 					}
 				
 					if (fd == -1) {
-						char prefix[128];
-						sprintf(prefix, "Couldn't open %.100s", header);
-						perror(prefix);
+						fprintf(stderr, "Couldn't find %.100s\n", header);
 						kill(SIGKILL, compiler_process);
 						exit(2);
 					}
@@ -594,9 +717,114 @@ int main(int argc, char **argv) {
 		
 	}
 #else
-	#error "@TODO"
-#endif
+	{
+		const char *in_headers_name = "_dlsub_temp";
+		const char *out_headers_name = "_dlsub_temp.i";
+		FILE *in_headers;
 
+		in_headers = fopen(in_headers_name, "wb");
+		if (!in_headers) {
+			perror("Couldn't create temporary file");
+			exit(2);
+		}
+
+		for (i = 1; i < argc-1; ++i) {
+			if (strcmp(argv[i], "-i") == 0) {
+				const char *header_name = argv[i+1];
+				FILE *header_fp = fopen(header_name, "rb");
+				char buf[4096];
+				size_t bytes_read;
+
+				if (!header_fp) {
+					/* check include directories */
+					char path[520];
+					int j;
+					for (j = 1; j < argc-1; ++j) {
+						if (strcmp(argv[j], "-I") == 0) {
+							const char *dir = argv[j+1];
+							sprintf(path, "%.256s\\%.256s", dir, header_name);
+							header_fp = fopen(path, "rb");
+							if (header_fp) break;
+						}
+						if (argv[j][0] == '-' && argv[j][1] != '-') ++j;
+					}
+				
+					if (!header_fp) {
+						fprintf(stderr, "Couldn't find %.100s.\n", header_name);
+						exit(2);
+					}
+				}
+				
+				while ((bytes_read = fread(buf, 1, sizeof buf, header_fp))) {
+					fwrite(buf, 1, bytes_read, in_headers);
+				}
+
+			}
+			if (argv[i][0] == '-' && argv[i][1] != '-') ++i;
+		}
+
+		fclose(in_headers);
+		
+		{
+			static char command[L_tmpnam + 50000] = {0};
+			size_t p = 0;
+			sprintf(&command[p], "%.300s %.1000s ", preprocessor_program, in_headers_name);
+			p += strlen(&command[p]);
+			for (i = 1; i < argc-1; ++i) {
+				if (strcmp(argv[i], "-I") == 0) {
+					const char *inc = argv[i+1];
+					if (p + strlen(inc) + 10 > sizeof command) {
+						fprintf(stderr, "Too many arguments to C preprocessor.\n");
+						exit(-1);
+					}
+					sprintf(&command[p], "/I %s ", inc);
+					p += strlen(&command[p]);
+				} else if (strcmp(argv[i], "-C") == 0) {
+					const char *arg = argv[i+1];
+					if (p + strlen(arg) + 10 > sizeof command) {
+						fprintf(stderr, "Too many arguments to C preprocessor.\n");
+						exit(-1);
+					}
+					sprintf(&command[p], "%s ", arg);
+					p += strlen(&command[p]);
+				}
+				if (argv[i][0] == '-' && argv[i][1] != '-') ++i;
+			}
+
+			system(command);
+			if (!file_is_readable(out_headers_name)) {
+				fprintf(stderr, "C header preprocessing failed.\n");
+				exit(2);
+			}
+		}
+
+		{
+			HANDLE output_file = CreateFileA(out_headers_name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+			HANDLE mapping;
+			
+			if (output_file == INVALID_HANDLE_VALUE) {
+				fprintf(stderr, "Couldn't open %s (Windows error code %u).\n", out_headers_name, GetLastError());
+				exit(2);
+			}
+
+			mapping = CreateFileMappingA(output_file, NULL, PAGE_READONLY, 0, 0, NULL);
+			if (mapping == INVALID_HANDLE_VALUE) {
+				fprintf(stderr, "Couldn't create mapping for %s (Windows error code %u).\n", out_headers_name, GetLastError());
+				exit(2);
+			}
+			
+			/* lets hope nobody's preprocessed headers are >4GB in size ... */
+			preprocessed_headers_len = GetFileSize(output_file, NULL);
+			preprocessed_headers = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, preprocessed_headers_len);
+			if (!preprocessed_headers) {
+				fprintf(stderr, "Couldn't map file %s into memory (Windows error code %u).\n", out_headers_name, GetLastError());
+				exit(2);
+			}
+		}
+
+
+	}
+#endif
 
 	/* figure out functions! */
 
@@ -638,7 +866,24 @@ int main(int argc, char **argv) {
 		#else
 		fprintf(c_output, "#if _WIN32\n");
 		#endif
-		fprintf(c_output, "#define DLSUB_REAL_DL_NAME \"%s\"\n", input_filename);
+		fprintf(c_output, "#define DLSUB_REAL_DL_NAME \"");
+		{
+			const char *p;
+			for (p = input_filename; *p; ++p) {
+				switch (*p) {
+				case '\\':
+					fputs("\\\\", c_output);
+					break;
+				case '"':
+					fputs("\\\"", c_output);
+					break;
+				default:
+					putc(*p, c_output);
+					break;
+				}
+			}
+		}
+		fprintf(c_output, "\"\n");
 		fprintf(c_output,
 			"#else\n"
 			"#error \"Please define DLSUB_REAL_DLNAME here.\"\n"
@@ -652,17 +897,23 @@ int main(int argc, char **argv) {
 			"#define DLSUB_GET_DLHANDLE(filename) dlopen(filename, RTLD_LAZY)\n"
 			"#define DLSUB_GET_SYM(handle, name) ((void(*)(void))dlsym(handle, name))\n"
 			"#define DLSUB_EXPORT\n"
+			"#define DLSUB_CALL\n"
 			"static void __attribute__((constructor)) dlsub_constructor(void) {\n"
 			"\tdlsub_init();\n"
+			"\t}\n"
 			"}\n"
 		);
 		fprintf(c_output,
 			"#elif _WIN32\n"
-			"extern void *__stdcall LoadLibraryA(const char *);\n"
-			"extern int (*__stdcall GetProcAddress(void *, const char *))(void);\n"
+			"typedef struct HINSTANCE__ *HMODULE;\n"
+			"__declspec(dllimport) HMODULE __stdcall LoadLibraryA(const char *);\n"
+			"__declspec(dllimport) __int64 (*__stdcall GetProcAddress(HMODULE, const char *))();\n"
 			"#define DLSUB_GET_DLHANDLE LoadLibraryA\n"
 			"#define DLSUB_GET_SYM GetProcAddress\n"
-			"#define DLSUB_EXPORT __declspec((dllexport))\n"
+			"#define DLSUB_CALL\n"
+			"#define DLSUB_EXPORT __declspec(dllexport)\n"
+		);
+		fprintf(c_output,
 			"unsigned __stdcall DllMain(void *instDLL, unsigned reason, void *_reserved) {\n"
 			"\t(void)instDLL; (void)_reserved;\n"
 			"\tswitch (reason) {\n"
@@ -671,6 +922,8 @@ int main(int argc, char **argv) {
 			"\t\tbreak;\n"
 			"\tcase 0: /* DLL unloaded */\n"
 			"\t\tbreak;\n"
+			"\t}\n"
+			"\treturn 1;\n"
 			"}\n"
 		);
 		fprintf(c_output,
@@ -789,6 +1042,18 @@ int main(int argc, char **argv) {
 						memmove(attr, p, (size_t)(statement + strlen(statement) + 1 - p));
 					}
 				}
+				{
+					/* remove MSVC calling conventions */
+					char *cc = strstr(statement, "__cdecl");
+					if (cc)
+						memmove(cc, cc + 7, (size_t)(statement + strlen(statement) + 1 - (cc+7)));
+					cc = strstr(statement, "__stdcall");
+					if (cc)
+						memmove(cc, cc + 9, (size_t)(statement + strlen(statement) + 1 - (cc+9)));
+					cc = strstr(statement, "__fastcall");
+					if (cc)
+						memmove(cc, cc + 10, (size_t)(statement + strlen(statement) + 1 - (cc+10)));
+				}
 			}
 
 			if (
@@ -807,7 +1072,7 @@ int main(int argc, char **argv) {
 				/* not a function declaration */
 			} else {
 				/* possibly a function declaration */
-				char *func_name = statement, *func_name_end;
+				char *func_name = statement, *func_name_end = 0;
 				if (strncmp(func_name, "const ", 6) == 0) func_name += 6;
 				while (is_ident(*func_name)) ++func_name;
 				if (*func_name == ' ') ++func_name;
@@ -839,7 +1104,7 @@ int main(int argc, char **argv) {
 					} else {
 						entry->declared = 1;
 						fprintf(c_output,
-							"typedef %.*s (*PTR_%.*s)%.*s;\n"
+							"typedef %.*s (*DLSUB_CALL PTR_%.*s)%.*s;\n"
 							"PTR_%.*s REAL_%.*s;\n",
 							(int)(func_name - statement),
 							statement,
@@ -866,7 +1131,21 @@ int main(int argc, char **argv) {
 			const SymbolHashEntry *entry;
 			const char *symbol;
 			
-			fprintf(nasm_output, "default rel\n");
+			fputs("default rel\n"
+				"%ifidn __OUTPUT_FORMAT__, elf64\n"
+				"\t%define FUNCPTR(p) [p wrt ..gotpc]\n"
+				"\t%macro GLOBAL 1\n"
+				"\t\tglobal %1 %+ :function\n"
+				"\t%endmacro\n"
+				"%else\n"
+				"\t%define FUNCPTR(p) p\n"
+				"\t%macro GLOBAL 1\n"
+				"\t\tglobal %1\n"
+				"\t\texport %1\n"
+				"\t%endmacro\n"
+				"%endif\n",
+			nasm_output);
+			
 
 			for (s = 0; s < all_symbols.n_entries; ++s) {
 				entry = all_symbols.entries[s];
@@ -890,7 +1169,7 @@ int main(int argc, char **argv) {
 				symbol = entry->symbol;
 				fprintf(c_output, "\tREAL_%s = (%s%s)DLSUB_GET_SYM(handle, \"%s\");\n", symbol,
 					entry->declared ? "PTR_" : "void (*)(void)", entry->declared ? symbol : "", symbol);
-				fprintf(nasm_output, "global %s:function\n", symbol);
+				fprintf(nasm_output, "GLOBAL %s\n", symbol);
 			}
 
 		
@@ -898,7 +1177,7 @@ int main(int argc, char **argv) {
 				entry = all_symbols.entries[s];
 				if (!entry) continue;
 				symbol = entry->symbol;
-				fprintf(nasm_output, "%s: mov r11, [REAL_%s wrt ..gotpc]\njmp [r11]\n", symbol, symbol);
+				fprintf(nasm_output, "%s: mov r11, FUNCPTR(REAL_%s)\njmp [r11]\n", symbol, symbol);
 			}
 		}
 
