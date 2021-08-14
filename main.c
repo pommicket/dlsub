@@ -900,7 +900,6 @@ int main(int argc, char **argv) {
 			"#define DLSUB_CALL\n"
 			"static void __attribute__((constructor)) dlsub_constructor(void) {\n"
 			"\tdlsub_init();\n"
-			"\t}\n"
 			"}\n"
 		);
 		fprintf(c_output,
