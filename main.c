@@ -1,9 +1,5 @@
 #define VERSION "0.0"
 
-#define MAX_HEADERS   2000
-#define MAX_LIBS      2000
-#define MAX_INCLUDES  2000
-
 #if __GNUC__
 #define UNUSED __attribute__((unused))
 #else
@@ -124,9 +120,11 @@ static void show_help_text_and_exit(const char *program_name) {
 		"\t-i <header file>         Add a header file to be processed.\n"
 		"\t-I <include directory>   Add an include directory when preprocessing header files.\n"
 		"\t-l <dynamic library>     Set the dynamic library file you want to replace.\n"
-		"\t-o <output C file>       Set the output file.\n"
+		"\t-o <output name>         Set the output file name.\n"
+		"\t-C <argument>            Add an argument for the C preprocessor.\n"
 	);
 	printf(
+		"\t--no-warn                Disable warnings if a function isn't found in a header file.\n"
 		"\t--help                   Show this help text and exit.\n"
 		"\t--version                Show version number and exit.\n"
 		"Environment variables:\n"
@@ -233,17 +231,16 @@ static void symbol_hash_table_free(SymbolHashTable *table) {
 }
 
 int main(int argc, char **argv) {
-	static int headers[MAX_HEADERS];
-	static int includes[MAX_INCLUDES];
 	char *preprocessed_headers;
 	size_t preprocessed_headers_len = 0;
 	const char *preprocessor_program = C_PREPROCESSOR_DEFAULT;
-	const char *output_filename = NULL;
+	const char *output_name = NULL;
 	const char *input_filename = NULL;
+	int no_warn = 0;
 
 	SymbolHashTable all_symbols = {0}; /* all symbols in all provided libraries */
 
-	int i, n_headers = 0, n_includes = 0;
+	int i;
 
 	{
 		char *p = getenv("C_PREPROCESSOR");
@@ -251,88 +248,86 @@ int main(int argc, char **argv) {
 			preprocessor_program = p;
 	}
 	
-	/* parse arguments */
-	for (i = 1; i < argc; ++i) {
-		if (argv[i][0] == '-') {
-			switch (argv[i][1]) {
-			case 'i':
-				if (n_headers >= MAX_HEADERS) {
-					fprintf(stderr, "Too many headers!\n");
-					exit(-1);
-				} else if (i < argc-1) {
-					headers[n_headers++] = i+1;
-					++i;
-				} else {
-					fprintf(stderr, "-i must be followed by a file name.\n");
-					exit(-1);
+	{
+		/* parse arguments */
+		for (i = 1; i < argc; ++i) {
+			if (argv[i][0] == '-') {
+				switch (argv[i][1]) {
+				case 'i':
+					if (i < argc-1) {
+						++i;
+					} else {
+						fprintf(stderr, "-i must be followed by a file name.\n");
+						exit(-1);
+					}
+					break;
+				case 'l':
+					if (i < argc-1) {
+						input_filename = argv[i+1];
+						++i;
+					} else {
+						fprintf(stderr, "-l must be followed by a file name.\n");
+						exit(-1);
+					}
+					break;
+				case 'I':
+					if (i < argc-1) {
+						++i;
+					} else {
+						fprintf(stderr, "-I must be followed by a directory name.\n");
+						exit(-1);
+					}
+					break;
+				case 'C':
+					if (i < argc-1) {
+						++i;
+					} else {
+						fprintf(stderr, "-I must be followed by a directory name.\n");
+						exit(-1);
+					}
+					break;
+				case 'o':
+					if (output_name) {
+						fprintf(stderr, "-o specified twice.\n");
+						exit(-1);
+					} else if (i < argc-1) {
+						output_name = argv[i+1];
+						++i;
+					} else {
+						fprintf(stderr, "-o must be followed by a file name.\n");
+						exit(-1);
+					}
+					break;
+				case '-':
+					if (strcmp(argv[i], "--help") == 0) {
+						show_help_text_and_exit(argv[0]);
+					} else if (strcmp(argv[i], "--version") == 0) {
+						printf(VERSION_TEXT);
+						exit(0);
+					} else if (strcmp(argv[i], "--no-warn") == 0) {
+						no_warn = 1;
+					} else goto unrecognized;
+					break;
+				default:
+				unrecognized:
+					fprintf(stderr, "Unrecognized flag: '%s'.\n", argv[i]);
+					break;
 				}
-				break;
-			case 'l':
-				if (input_filename) {
-					fprintf(stderr, "-l specified multiple times.\n");
-					exit(-1);
-				} else if (i < argc-1) {
-					input_filename = argv[i+1];
-					++i;
-				} else {
-					fprintf(stderr, "-l must be followed by a file name.\n");
-					exit(-1);
-				}
-				break;
-			case 'I':
-				if (n_includes >= MAX_INCLUDES) {
-					fprintf(stderr, "Too many includes!\n");
-					exit(-1);
-				} else if (i < argc-1) {
-					includes[n_includes++] = i+1;
-					++i;
-				} else {
-					fprintf(stderr, "-I must be followed by a directory name.\n");
-					exit(-1);
-				}
-				break;
-			case 'o':
-				if (output_filename) {
-					fprintf(stderr, "-o specified twice.\n");
-					exit(-1);
-				} else if (i < argc-1) {
-					output_filename = argv[i+1];
-					++i;
-				} else {
-					fprintf(stderr, "-o must be followed by a file name.\n");
-					exit(-1);
-				}
-				break;
-			case '-':
-				if (strcmp(argv[i], "--help") == 0) {
-					show_help_text_and_exit(argv[0]);
-				} else if (strcmp(argv[i], "--version") == 0) {
-					printf(VERSION_TEXT);
-					exit(0);
-				}
-				break;
+			} else {
+				fprintf(stderr, "Stray argument (#%d): '%s'.\n", i, argv[i]);
+				exit(-1);
 			}
-		} else {
-			fprintf(stderr, "Stray argument (#%d): '%s'.\n", i, argv[i]);
-			exit(-1);
+		}
+		if (!input_filename) {
+			show_help_text_and_exit(argv[0]);
 		}
 	}
 
-	if (!output_filename) {
-		output_filename = "out.c";
+	if (!output_name) {
+		output_name = "out";
 	}
 
-	if (!input_filename || n_headers == 0) {
-		show_help_text_and_exit(argv[0]);
-	}
 
-	/* check that files exist */
-	for (i = 0; i < n_headers; ++i) {
-		if (!file_is_readable(argv[headers[i]])) {
-			fprintf(stderr, "Can't open provided header file: '%s'.\n", argv[headers[i]]);
-			exit(1);
-		}
-	}
 	if (!file_is_readable(input_filename)) {
 		fprintf(stderr, "Can't open provided dynamic library file: '%s'.\n", input_filename);
 		exit(1);
@@ -471,7 +466,9 @@ int main(int argc, char **argv) {
 			perror("Couldn't create compiler process");
 			exit(2);
 		case 0: {
-			static char *cc_argv[2*MAX_INCLUDES + 10];
+		#define MAX_CC_ARGV 4000
+			static char *cc_argv[MAX_CC_ARGV+1];
+			int a = 0;
 			/* child */
 			close(pipefd[1]); /* don't need write end of pipe */
 			if (dup2(pipefd[0], 0) == -1) {
@@ -482,15 +479,28 @@ int main(int argc, char **argv) {
 				perror("Couldn't redirect C compiler's stdout to file");
 				exit(2);
 			}
-			cc_argv[0] = (char *)preprocessor_program;
-			cc_argv[1] = "-E";
-			cc_argv[2] = "-";
-			cc_argv[3] = "-D";
-			cc_argv[4] = "SDL_DISABLE_IMMINTRIN_H";
-			for (i = 0; i < n_includes; ++i) {
-				cc_argv[5+2*i+0] = "-I";
-				cc_argv[5+2*i+1] = argv[includes[i]];
+
+			cc_argv[a++] = (char *)preprocessor_program;
+			cc_argv[a++] = "-E";
+			cc_argv[a++] = "-";
+			for (i = 1; i < argc-1; ++i) {
+				if (strcmp(argv[i], "-I") == 0) {
+					if (a + 2 > MAX_CC_ARGV) {
+						fprintf(stderr, "Too many compiler arguments.\n");
+						exit(-1);
+					}
+					cc_argv[a++] = "-I";
+					cc_argv[a++] = argv[i+1];
+				} else if (strcmp(argv[i], "-C") == 0) {
+					if (a + 1 > MAX_CC_ARGV) {
+						fprintf(stderr, "Too many compiler arguments.\n");
+						exit(-1);
+					}
+					cc_argv[a++] = argv[i+1];
+				}
+				if (argv[i][0] == '-' && argv[i][1] != '-') ++i;
 			}
+			cc_argv[a++] = NULL;
 			if (execv(preprocessor_program, cc_argv) == -1) {
 				perror("Couldn't start C compiler");
 				exit(2);
@@ -502,31 +512,51 @@ int main(int argc, char **argv) {
 
 		/* parent */
 		close(pipefd[0]); /* don't need read end of pipe */
-		for (i = 0; i < n_headers; ++i) {
-			const char *header = argv[headers[i]];
-			int fd = open(header, O_RDONLY);
-			char buf[4096];
-			ssize_t bytes_read;
+		for (i = 1; i < argc-1; ++i) {
+			if (strcmp(argv[i], "-i") == 0) {
+				const char *header = argv[i+1];
+				int fd = open(header, O_RDONLY);
+				char buf[4096];
+				ssize_t bytes_read;
 
-			if (fd == -1) {
-				char prefix[128];
-				sprintf(prefix, "Couldn't open %.100s", header);
-				perror(prefix);
-				exit(2);
-			}
-			
-			while ((bytes_read = read(fd, buf, sizeof buf)) > 0) {
-				write(pipefd[1], buf, (size_t)bytes_read);
-			}
+				if (fd == -1) {
+					/* check include directories */
+					char path[520];
+					int j;
+					for (j = 1; j < argc-1; ++j) {
+						if (strcmp(argv[j], "-I") == 0) {
+							const char *dir = argv[j+1];
+							sprintf(path, "%.256s/%.256s", dir, header);
+							fd = open(path, O_RDONLY);
+							if (fd != -1) break;
+						}
+						if (argv[j][0] == '-' && argv[j][1] != '-') ++j;
+					}
+				
+					if (fd == -1) {
+						char prefix[128];
+						sprintf(prefix, "Couldn't open %.100s", header);
+						perror(prefix);
+						kill(SIGKILL, compiler_process);
+						exit(2);
+					}
+				}
+				
+				while ((bytes_read = read(fd, buf, sizeof buf)) > 0) {
+					write(pipefd[1], buf, (size_t)bytes_read);
+				}
 
-			if (bytes_read < 0) {
-				char prefix[128];
-				sprintf(prefix, "Error reading %.100s", header);
-				perror(prefix);
-				exit(2);
-			}
+				if (bytes_read < 0) {
+					char prefix[128];
+					sprintf(prefix, "Error reading %.100s", header);
+					perror(prefix);
+					kill(SIGKILL, compiler_process);
+					exit(2);
+				}
 
-			close(fd);
+				close(fd);
+			}
+			if (argv[i][0] == '-' && argv[i][1] != '-') ++i;
 		}
 	
 		close(pipefd[1]);
@@ -572,14 +602,75 @@ int main(int argc, char **argv) {
 
 
 	{
-		FILE *output = fopen(output_filename, "w");
+		FILE *c_output;
+		FILE *nasm_output; 
 		size_t c = 0;
 		const char *semicolon;
 		
-		if (!output) {
-			perror("Couldn't open output file");
-			exit(1);
+
+		{
+			char filename[1024];
+			
+			sprintf(filename, "%.1000s.c", output_name);
+			c_output = fopen(filename, "w");
+			if (!c_output) {
+				perror("Couldn't open C output file");
+				exit(1);
+			}
+			
+			sprintf(filename, "%.1000s.asm", output_name);
+			nasm_output = fopen(filename, "w");
+			if (!nasm_output) {
+				perror("Couldn't open nasm output file");
+				exit(1);
+			}
 		}
+
+		for (i = 1; i < argc-1; ++i) {
+			if (strcmp(argv[i], "-i") == 0) {
+				fprintf(c_output, "#include <%s>\n", argv[i+1]);
+			}
+			if (argv[i][0] == '-' && argv[i][1] != '-') ++i;
+		}
+
+		fprintf(c_output, "#define DLSUB_REAL_DL_NAME \"%s\"\n", input_filename);
+
+		fprintf(c_output,
+			"static void dlsub_init(void);\n"
+			"\n"
+			"#if __unix__\n"
+			"#include <dlfcn.h>\n"
+			"#define DLSUB_GET_DLHANDLE(filename) dlopen(filename, RTLD_LAZY)\n"
+			"#define DLSUB_GET_SYM(handle, name) ((void(*)(void))dlsym(handle, name))\n"
+			"#define DLSUB_EXPORT\n"
+			"static void __attribute__((constructor)) dlsub_constructor(void) {\n"
+			"\tdlsub_init();\n"
+			"}\n"
+		);
+		fprintf(c_output,
+			"#elif _WIN32\n"
+			"extern void *__stdcall LoadLibraryA(const char *);\n"
+			"extern int (*__stdcall GetProcAddress(void *, const char *))(void);\n"
+			"#define DLSUB_GET_DLHANDLE LoadLibraryA\n"
+			"#define DLSUB_GET_SYM GetProcAddress\n"
+			"#define DLSUB_EXPORT __declspec((dllexport))\n"
+			"unsigned __stdcall DllMain(void *instDLL, unsigned reason, void *_reserved) {\n"
+			"\t(void)instDLL; (void)_reserved;\n"
+			"\tswitch (reason) {\n"
+			"\tcase 1: /* DLL loaded */\n"
+			"\t\tdlsub_init();\n"
+			"\t\tbreak;\n"
+			"\tcase 0: /* DLL unloaded */\n"
+			"\t\tbreak;\n"
+			"}\n"
+		);
+		fprintf(c_output,
+			"#else\n"
+			"#error \"Unrecognized OS.\"\n"
+			"#endif\n"
+		);
+
+		fprintf(c_output, "\n\n");
 
 		while ((semicolon = memchr(preprocessed_headers + c, ';', preprocessed_headers_len - c))) {
 			char statement_data[1024], *statement = statement_data;
@@ -640,9 +731,9 @@ int main(int argc, char **argv) {
 				
 				/* remove duplicate/unnecessary whitespace */
 				for (in = statement, out = statement; *in; ++in) {
-					if (in[0] == ' ' && strchr(" ()*,", in[1])) {
+					if (in[0] == ' ' && strchr(" (){}*,", in[1])) {
 						continue;
-					} else if (strchr(" ()*,", in[0]) && in[1] == ' ') {
+					} else if (strchr(" (){}*,", in[0]) && in[1] == ' ') {
 						*out++ = *in;
 						while (in[1] == ' ') ++in;
 					} else {
@@ -657,6 +748,11 @@ int main(int argc, char **argv) {
 				/* remove trailing whitespace */
 				if (*statement && statement[strlen(statement)-1] == ' ') {
 					statement[strlen(statement)-1] = '\0';
+				}
+
+				while (statement[0] == '}') {
+					/* this can happen with inline functions */
+					++statement;
 				}
 
 				/* remove "extern" at beginning */
@@ -684,10 +780,8 @@ int main(int argc, char **argv) {
 						memmove(attr, p, (size_t)(statement + strlen(statement) + 1 - p));
 					}
 				}
-
-				/* @TODO(windows): remove __cdecl, et al. */
 			}
-			
+
 			if (
 				/* these conditions aren't airtight but practically speaking they're good */
 				   strlen(statement) < 5 /* shortest possible function declaration is A f(); */
@@ -735,9 +829,9 @@ int main(int argc, char **argv) {
 						/* already processed this function */
 					} else {
 						entry->declared = 1;
-						fprintf(output,
+						fprintf(c_output,
 							"typedef %.*s (*PTR_%.*s)%.*s;\n"
-							"static PTR_%.*s REAL_%.*s;\n",
+							"PTR_%.*s REAL_%.*s;\n",
 							(int)(func_name - statement),
 							statement,
 							(int)(func_name_end - func_name),
@@ -757,61 +851,53 @@ int main(int argc, char **argv) {
 			c = (size_t)(semicolon - preprocessed_headers);
 			++c;
 		}
-		fprintf(output, "\n\n\n"
-			"static void dlsub_init(void);\n"
-			"\n"
-			"#if __unix__\n"
-			"#include <dlfcn.h>\n"
-			"#define DLSUB_GET_DLHANDLE(filename) dlopen(filename, RTLD_LAZY)\n"
-			"#define DLSUB_GET_SYM dlsym\n"
-			"static void __attribute__((constructor)) dlsub_constructor(void) {\n"
-			"\tdlsub_init();\n"
-			"}\n"
-		);
-		fprintf(output,
-			"#elif _WIN32\n"
-			"extern void *__stdcall LoadLibraryA(const char *);\n"
-			"extern int (*__stdcall GetProcAddress(void *, const char *))(void);\n"
-			"#define DLSUB_GET_DLHANDLE LoadLibraryA\n"
-			"#define DLSUB_GET_SYM GetProcAddress\n"
-			"unsigned __stdcall DllMain(void *instDLL, unsigned reason, void *_reserved) {\n"
-			"\t(void)instDLL; (void)_reserved;\n"
-			"\tswitch (reason) {\n"
-			"\tcase 1: /* DLL loaded */\n"
-			"\t\tdlsub_init();\n"
-			"\t\tbreak;\n"
-			"\tcase 0: /* DLL unloaded */\n"
-			"\t\tbreak;\n"
-			"}\n"
-		);
-		fprintf(output,
-			"#else\n"
-			"#error \"Unrecognized OS.\"\n"
-			"#endif\n"
-		);
-		fprintf(output, "static void dlsub_init(void) {\n"
-			"\tvoid *handle = DLSUB_GET_DLHANDLE(\"%s\");\n",
-			input_filename);
 		
 		{
 			size_t s;
+			const SymbolHashEntry *entry;
+			const char *symbol;
+			
+			fprintf(nasm_output, "default rel\n");
+
 			for (s = 0; s < all_symbols.n_entries; ++s) {
-				const SymbolHashEntry *entry = all_symbols.entries[s];
-				const char *symbol;
+				entry = all_symbols.entries[s];
 				if (!entry) continue;
 				symbol = entry->symbol;
-				if (entry->declared) {
-					fprintf(output, "\tREAL_%s = (PTR_%s)DLSUB_GET_SYM(handle, \"%s\");\n", symbol, symbol, symbol);
-				} else {
-					fprintf(stderr, "Warning: Function '%s' declared in library, not found in any header file. It will not be made available.\n", symbol);
+				fprintf(nasm_output, "extern REAL_%s\n", symbol);
+				if (!entry->declared) {
+					fprintf(c_output, "void (*REAL_%s)(void);\n", symbol);
+					if (!no_warn)
+						fprintf(stderr, "Warning: Function '%s' declared in library, not found in any header file. It will not be usable from C.\n", symbol);
 				}
+			}
+
+			fprintf(nasm_output, "section .text\n");
+			fprintf(c_output, "static void dlsub_init(void) {\n"
+				"\tvoid *handle = DLSUB_GET_DLHANDLE(DLSUB_REAL_DL_NAME);\n");
+
+			for (s = 0; s < all_symbols.n_entries; ++s) {
+				entry = all_symbols.entries[s];
+				if (!entry) continue;
+				symbol = entry->symbol;
+				fprintf(c_output, "\tREAL_%s = (%s%s)DLSUB_GET_SYM(handle, \"%s\");\n", symbol,
+					entry->declared ? "PTR_" : "void (*)(void)", entry->declared ? symbol : "", symbol);
+				fprintf(nasm_output, "global %s:function\n", symbol);
+			}
+
+		
+			for (s = 0; s < all_symbols.n_entries; ++s) {
+				entry = all_symbols.entries[s];
+				if (!entry) continue;
+				symbol = entry->symbol;
+				fprintf(nasm_output, "%s: mov r11, [REAL_%s wrt ..gotpc]\njmp [r11]\n", symbol, symbol);
 			}
 		}
 
-		fprintf(output, "}\n");
+		fprintf(c_output, "}\n");
 
 
-		fclose(output);
+		fclose(c_output);
+		fclose(nasm_output);
 	}
 
 	symbol_hash_table_free(&all_symbols);

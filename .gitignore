@@ -1,5 +1,11 @@
 *.so
+*.so.*
+*.o
 out.c
+sdl.c
+x11.c
+math.c
+*.asm
 dlsub
 tags
 TAGS
