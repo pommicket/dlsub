@@ -1,0 +1,11 @@
+*.so
+out.c
+dlsub
+tags
+TAGS
+*~
+*.exe
+*.ilk
+*.lib
+*.exp
+*.dll
