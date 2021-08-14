@@ -130,7 +130,7 @@ And on Windows:
 
 ```
 nasm -f win64 sdl.asm -o sdl_asm.obj
-cl /nologo /Fe:SDL2 /LD sdl_asm.obj sdl.c /I C:\\SDL2-2.0.14\\include
+cl /nologo /Fe:SDL2 /LD sdl_asm.obj sdl.c /I C:\SDL2-2.0.14\include
 ```
 
 And just copy `SDL2.dll` to the same directory as the target application.
