@@ -25,7 +25,7 @@ You will need:
 
 To install these on Ubuntu/Debian:
 
-```
+```bash
 sudo apt install nasm tcc
 ```
 
@@ -70,14 +70,17 @@ You can see `dlsub --help` for a list of all options.
 You can specify multiple header files if the library has more than one.
 Here is an example invocation for replacing SDL:
 
+Windows:
+
 ```bash
-dlsub --no-warn -l <SDL library file> -I <SDL include directory> -i SDL.h -i SDL_syswm.h -i SDL_vulkan.h -C <- on Unix, / on Windows>DSDL_DISABLE_IMMINTRIN_H -o sdl
+dlsub --no-warn -l C:\SDL2-2.0.14\lib\x64\SDL2.dll -I C:\SDL2-2.0.14\include -i SDL.h -i SDL_syswm.h -i SDL_vulkan.h -C /DSDL_DISABLE_IMMINTRIN_H -o sdl
 ```
 
-Substitute `<SDL library file>` and `<SDL include directory>`
-with `/lib/x86_64-linux-gnu/libSDL2-2.0.so` and `/usr/include/SDL2` on Linux, and
-something like `C:\\SDL2-2.0.14\\lib\\x64\\SDL2.dll` and
-`C:\\SDL2-2.0.14\\include` on Windows 
+Linux:
+
+```bash
+./dlsub --no-warn -l /lib/x86_64-linux-gnu/libSDL2-2.0.so -I /usr/include/SDL2 -i SDL.h -i SDL_syswm.h -i SDL_vulkan.h -C -DSDL_DISABLE_IMMINTRIN_H -o sdl
+```
 
 (the `-DSDL_DISABLE_IMMINTRIN_H` is needed for tcc, and it also speeds up
 processing)
@@ -154,8 +157,6 @@ without assembly.
 dlsub --no-warn -l /usr/lib/x86_64-linux-gnu/libX11.so.6 -I /usr/include/X11 -i Xlib.h -i Xutil.h -o x11
 ```
 
-(you can ignore the warnings).
-
 Delete the line from x11.asm:
 
 ```
@@ -198,11 +199,13 @@ dlsub --no-warn -l /lib/x86_64-linux-gnu/libm.so.6 -I /usr/include -i math.h -o 
 ```
 
 Delete from math.asm:
+
 ```
 GLOBAL exp
 ```
 
 Add to math.c:
+
 ```
 double exp(double x) {
 	return 2.0 * x;
