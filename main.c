@@ -633,7 +633,16 @@ int main(int argc, char **argv) {
 			if (argv[i][0] == '-' && argv[i][1] != '-') ++i;
 		}
 
+		#if __unix__
+		fprintf(c_output, "#if __unix__\n");
+		#else
+		fprintf(c_output, "#if _WIN32\n");
+		#endif
 		fprintf(c_output, "#define DLSUB_REAL_DL_NAME \"%s\"\n", input_filename);
+		fprintf(c_output,
+			"#else\n"
+			"#error \"Please define DLSUB_REAL_DLNAME here.\"\n"
+			"#endif\n");
 
 		fprintf(c_output,
 			"static void dlsub_init(void);\n"
